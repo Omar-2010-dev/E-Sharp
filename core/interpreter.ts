@@ -491,23 +491,33 @@ export class Interpreter {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
         return r.MeasureText(String(text), Number(fontSize));
       },
-        
-      drawRect: (x, y, w, h, color, rotation) => {
 
-        r.DrawRectangle(Number(x), Number(y), Number(w), Number(h), getColor(color));
-        const rot = Number(rotation || 0);
+      drawRect: (x, y, w, h, color, rotation = 0) => {
+        if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
 
-        if (rot === 0) {
-          // لو مفيش دوران، استخدم الدالة العادية الأسرع و (x,y) هو الركن الشمالي الغربي
-          r.DrawRectangle(Number(x), Number(y), Number(w), Number(h), getColor(color));
-        } else {
-          // لو فيه دوران، استخدم الدالة المتقدمة، و (x,y) بيتعامل معاه كأنه مركز المربع
-          const rect = { x: Number(x), y: Number(y), width: Number(w), height: Number(h) };
-          const origin = { x: Number(w) / 2, y: Number(h) / 2 }; // نقطة الدوران هي مركز المربع نفسه
-          r.DrawRectanglePro(rect, origin, rot, getColor(color));
-        }
+        const posX = Number(x);
+        const posY = Number(y);
+        const width = Number(w);
+        const height = Number(h);
+        const rot = Number(rotation);
+
+        // بنحسب المركز عشان نخليه هو نقطة الارتكاز دائماً
+        const rect = {
+          x: posX + width / 2,
+          y: posY + height / 2,
+          width: width,
+          height: height
+        };
+
+        // الـ origin هنا هو نص العرض والطول، وده بيخلي الدوران حول المركز
+        const origin = { x: width / 2, y: height / 2 };
+
+        // بنستخدم DrawRectanglePro بس عشان هي اللي بتضمن السنتر والدوران صح
+        r.DrawRectanglePro(rect, origin, rot, getColor(color));
+
         return null;
       },
+
       drawCircle: (x, y, rad, color) => {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
         r.DrawCircle(Number(x), Number(y), Number(rad), getColor(color));

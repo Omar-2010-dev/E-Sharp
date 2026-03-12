@@ -491,9 +491,21 @@ export class Interpreter {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
         return r.MeasureText(String(text), Number(fontSize));
       },
-      drawRect: (x, y, w, h, color) => {
-        if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
+        
+      drawRect: (x, y, w, h, color, rotation) => {
+
         r.DrawRectangle(Number(x), Number(y), Number(w), Number(h), getColor(color));
+        const rot = Number(rotation || 0);
+
+        if (rot === 0) {
+          // لو مفيش دوران، استخدم الدالة العادية الأسرع و (x,y) هو الركن الشمالي الغربي
+          r.DrawRectangle(Number(x), Number(y), Number(w), Number(h), getColor(color));
+        } else {
+          // لو فيه دوران، استخدم الدالة المتقدمة، و (x,y) بيتعامل معاه كأنه مركز المربع
+          const rect = { x: Number(x), y: Number(y), width: Number(w), height: Number(h) };
+          const origin = { x: Number(w) / 2, y: Number(h) / 2 }; // نقطة الدوران هي مركز المربع نفسه
+          r.DrawRectanglePro(rect, origin, rot, getColor(color));
+        }
         return null;
       },
       drawCircle: (x, y, rad, color) => {

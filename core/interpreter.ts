@@ -1478,4 +1478,4 @@ export class Interpreter {
       return s.slice(Number(args[0]), args[1] != null ? Number(args[1]) : undefined);
     throw new ESharpError(`No string method '${m}'`);
   }
-}
+} 

@@ -111,10 +111,28 @@ export class Interpreter {
   private maxSteps = 5000000; // زودنا الحد الأقصى عشان الألعاب التقيلة
   private loopDepth = 0; // متغير جديد عشان نعرف إحنا جوه loop ولا لأ
 
+  // === متغيرات الكاميرا (Camera State) ===
+  private cameraTarget: any = null;
+  private cameraOffset = { x: 0, y: 0 };
+  private cameraZoom = 1.0;
+  private cameraLerpAmount = 0.05;
+  private camera2D: any = null; // Raylib Camera2D object
+
+  // === متغيرات المحرك (Engine State) ===
+  private engineEntities: any[] = [];
+  private staticColliders: any[] = [];
+  private rigidbodies: { entity: any; gravityScale: number }[] = [];
+  private uiDrawQueue: any[] = []; // <-- طابور جديد عشان أوامر رسم الـ UI
+
   constructor() {
     this.env = new Environment();
     this.loopDepth = 0;
     this.builtins();
+  }
+
+  // دالة مساعدة عشان نجيب الخصائص من كائن E# سواء كان قاموس أو instance
+  private getProps(o: any) {
+    return o && o.__type === 'instance' ? o.props : o;
   }
 
   // تعريف الدوال الجاهزة في اللغة
@@ -151,8 +169,6 @@ export class Interpreter {
       return r[colorStr.toUpperCase()] || r.WHITE;
     };
 
-
-
     // دالة مساعدة لتحويل اسم الزرار لرقم Raylib
     const getKey = (name: unknown) => {
       if (!r) return 0;
@@ -169,11 +185,6 @@ export class Interpreter {
       if (k.length === 1) return k.charCodeAt(0);
       // Fallback: try to find KEY_{NAME} in raylib object
       return r['KEY_' + k] || 0;
-    };
-
-    // دالة مساعدة عشان نجيب الخصائص من كائن E# سواء كان قاموس أو instance
-    const getProps = (o: any) => {
-      return o && o.__type === 'instance' ? o.props : o;
     };
 
     const b: Record<string, (...a: unknown[]) => unknown | Promise<unknown>> = {
@@ -485,6 +496,19 @@ export class Interpreter {
         }
         r.InitWindow(Number(w), Number(h), String(title));
         r.SetTargetFPS(60); // 60 FPS Target
+
+        // --- تهيئة الكاميرا ---
+        this.camera2D = {
+          target: { x: Number(w) / 2, y: Number(h) / 2 },
+          offset: { x: Number(w) / 2, y: Number(h) / 2 },
+          rotation: 0.0,
+          zoom: 1.0
+        };
+        this.cameraTarget = null;
+        this.cameraOffset = { x: 0, y: 0 };
+        this.cameraZoom = 1.0;
+        this.cameraLerpAmount = 0.05; // قيمة افتراضية للحركة الناعمة
+
         return null;
       },
       measureText: (text, fontSize) => {
@@ -495,25 +519,23 @@ export class Interpreter {
       drawRect: (x, y, w, h, color, rotation = 0) => {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
 
-        const posX = Number(x);
-        const posY = Number(y);
+        const centerX = Number(x);
+        const centerY = Number(y);
         const width = Number(w);
         const height = Number(h);
         const rot = Number(rotation);
 
-        // بنحسب المركز عشان نخليه هو نقطة الارتكاز دائماً
+        // دايمًا بنعتبر (x, y) هي مركز المستطيل، حتى لو مفيش دوران
         const rect = {
-          x: posX + width / 2,
-          y: posY + height / 2,
+          x: centerX,
+          y: centerY,
           width: width,
           height: height
         };
 
-        // الـ origin هنا هو نص العرض والطول، وده بيخلي الدوران حول المركز
         const origin = { x: width / 2, y: height / 2 };
 
-        // بنستخدم DrawRectanglePro بس عشان هي اللي بتضمن السنتر والدوران صح
-        r.DrawRectanglePro(rect, origin, rot, getColor(color));
+        r.DrawRectanglePro(rect, origin, isFinite(rot) ? rot : 0, getColor(color));
 
         return null;
       },
@@ -542,16 +564,76 @@ export class Interpreter {
       },
       clearWindow: (color) => {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
+
+        // --- تحديث الكاميرا كل فريم ---
+        if (this.camera2D) {
+          // 1. لو فيه هدف، حرك الكاميرا ناحيته بسلاسة
+          if (this.cameraTarget) {
+            const targetProps = this.getProps(this.cameraTarget);
+            const targetX =
+              Number(targetProps?.x || 0) + Number(targetProps?.w || targetProps?.width || 0) / 2;
+            const targetY =
+              Number(targetProps?.y || 0) + Number(targetProps?.h || targetProps?.height || 0) / 2;
+
+            // بنستخدم دالة lerp عشان الحركة تبقى ناعمة
+            this.camera2D.target.x = b.lerp(
+              this.camera2D.target.x,
+              targetX,
+              this.cameraLerpAmount
+            ) as number;
+            this.camera2D.target.y = b.lerp(
+              this.camera2D.target.y,
+              targetY,
+              this.cameraLerpAmount
+            ) as number;
+          }
+          // 2. تطبيق الزووم والإزاحة
+          // تعديل: بنعمل Lerp للزووم كمان عشان يبقى ناعم زي الحركة بالظبط
+          this.camera2D.zoom = b.lerp(
+            this.camera2D.zoom,
+            this.cameraZoom,
+            this.cameraLerpAmount
+          ) as number;
+
+          const screenWidth = r.GetScreenWidth();
+          const screenHeight = r.GetScreenHeight();
+          this.camera2D.offset = {
+            x: screenWidth / 2 + this.cameraOffset.x,
+            y: screenHeight / 2 + this.cameraOffset.y
+          };
+        }
+
         r.BeginDrawing(); // Start Frame
+        if (this.camera2D) r.BeginMode2D(this.camera2D); // شغل وضع الكاميرا
         r.ClearBackground(getColor(color));
         return null;
       },
       endFrame: () => {
         if (!r) throw new ESharpError('Raylib not initialized. Call showWindow() first.');
         this.steps = 0; // تصفير العداد في كل فريم
+
+        if (this.camera2D) r.EndMode2D(); // اقفل وضع الكاميرا
+
+        // --- 🎨 معالجة أوامر رسم الـ UI ---
+        // هنا بنرسم كل حاجة في طابور الـ UI بعد ما قفلنا وضع الكاميرا
+        for (const cmd of this.uiDrawQueue) {
+          if (cmd.type === 'text') {
+            // بنستدعي منطق الرسم الأصلي بتاع drawText
+            const [text, x, y, size, color, align] = cmd.args;
+            const textStr = String(text);
+            let posX = Number(x);
+            const fontSize = Number(size);
+            if (align === 'center') posX -= r.MeasureText(textStr, fontSize) / 2;
+            else if (align === 'right') posX -= r.MeasureText(textStr, fontSize);
+            r.DrawText(textStr, posX, Number(y), fontSize, getColor(color));
+          }
+        }
+        this.uiDrawQueue = []; // بنفضي الطابور عشان الفريم الجاي
+
         r.EndDrawing(); // End Frame (Swap Buffers)
         return null;
       },
+
       isWindowOpen: () => (r ? !r.WindowShouldClose() : false),
       // دالة جديدة بتشوف لو المستخدم طلب يقفل الشاشة
       shouldClose: () => (r ? r.WindowShouldClose() : true),
@@ -592,8 +674,8 @@ export class Interpreter {
       // --- 📏 حسابات رياضية ذكية ---
       // بتجيب المسافة بين كائنين بدل ما المبرمج يكتب معادلة الجذر التربيعي
       getDistance: (obj1, obj2) => {
-        const o1 = getProps(obj1);
-        const o2 = getProps(obj2);
+        const o1 = this.getProps(obj1);
+        const o2 = this.getProps(obj2);
         const dx = Number(o2?.x || 0) - Number(o1?.x || 0);
         const dy = Number(o2?.y || 0) - Number(o1?.y || 0);
         return Math.sqrt(dx * dx + dy * dy);
@@ -601,8 +683,8 @@ export class Interpreter {
 
       // بتجيب الزاوية المطلوبة عشان كائن "يبص" للتاني (مثلاً رصاصة رايحة للماوس)
       getAngle: (obj1, obj2) => {
-        const o1 = getProps(obj1);
-        const o2 = getProps(obj2);
+        const o1 = this.getProps(obj1);
+        const o2 = this.getProps(obj2);
         const dx = Number(o2?.x || 0) - Number(o1?.x || 0);
         const dy = Number(o2?.y || 0) - Number(o1?.y || 0);
         // بنرجع الزاوية بالدرجات (degrees) عشان أسهل في التعامل
@@ -619,8 +701,8 @@ export class Interpreter {
       // تصادم الدوائر (محتاج x, y, radius)
       checkCircleCollision: (c1, c2) => {
         if (!r) return false;
-        const o1 = getProps(c1);
-        const o2 = getProps(c2);
+        const o1 = this.getProps(c1);
+        const o2 = this.getProps(c2);
         const center1 = { x: Number(o1?.x || 0), y: Number(o1?.y || 0) };
         const radius1 = Number(o1?.radius || 0);
         const center2 = { x: Number(o2?.x || 0), y: Number(o2?.y || 0) };
@@ -632,7 +714,7 @@ export class Interpreter {
       isPointInRect: (px, py, rect) => {
         const x = Number(px);
         const y = Number(py);
-        const r_props = getProps(rect);
+        const r_props = this.getProps(rect);
         const rx = Number(r_props?.x || 0);
         const ry = Number(r_props?.y || 0);
         const rw = Number(r_props?.w || r_props?.width || 0);
@@ -643,8 +725,8 @@ export class Interpreter {
       // --- 🧠 حركة ذكية ومعلومات الشاشة ---
       // بتحرك كائن ناحية كائن تاني، بالسرعة المحددة في الكائن الأول (obj1.speed)
       moveToward: (obj1, obj2) => {
-        const o1 = getProps(obj1);
-        const o2 = getProps(obj2);
+        const o1 = this.getProps(obj1);
+        const o2 = this.getProps(obj2);
         if (!r || !o1 || !o2) return null;
 
         const speed = Number(o1.speed || 0);
@@ -678,7 +760,173 @@ export class Interpreter {
       isKeyPressed: (key) => (r ? r.IsKeyPressed(getKey(key)) : false),
       getMouseX: () => (r ? r.GetMouseX() : 0),
       getMouseY: () => (r ? r.GetMouseY() : 0),
-      isMouseDown: (btn) => (r ? r.IsMouseButtonDown(Number(btn ?? 0)) : false)
+      isMouseDown: (btn) => (r ? r.IsMouseButtonDown(Number(btn ?? 0)) : false),
+
+      // ==========================================
+      // 🚀 E# PRO PHYSICS ENGINE (Unity Style)
+      // ==========================================
+      createEntity: (x, y, w, h, color) => {
+        const ent = {
+          x: Number(x),
+          y: Number(y),
+          w: Number(w),
+          h: Number(h),
+          color: String(color),
+          vx: 0,
+          vy: 0,
+          isGrounded: false,
+          bounciness: 0
+        };
+        this.engineEntities.push(ent);
+        return ent;
+      },
+
+      addRigidbody: (entity, gravityScale) => {
+        const ent = this.getProps(entity);
+        if (ent) this.rigidbodies.push({ entity: ent, gravityScale: Number(gravityScale) });
+        return null;
+      },
+
+      addStaticCollider: (...args) => {
+        // ذكاء اصطناعي في التعامل مع المدخلات:
+        // 1. لو بعت كائن Entity واحد: addStaticCollider(player)
+        if (args.length === 1) {
+          const ent = this.getProps(args[0]);
+          if (ent) this.staticColliders.push(ent);
+        }
+        // 2. لو بعت الأبعاد يدوي: addStaticCollider(x, y, w, h, color)
+        else if (args.length >= 4) {
+          this.staticColliders.push({
+            x: Number(args[0]),
+            y: Number(args[1]),
+            w: Number(args[2]),
+            h: Number(args[3]),
+            color: String(args[4] || '#2c3e50'),
+            _isRaw: true // علامة عشان نعرف إن ده مش Entity كامل
+          });
+        }
+        return null;
+      },
+
+      engineStep: (deltaTime) => {
+        // 1. معالجة الـ dt التلقائية (زي ما إنت عملتها بالظبط، عاش!)
+        const rawDt =
+          deltaTime !== undefined && deltaTime !== null
+            ? Number(deltaTime)
+            : r
+              ? r.GetFrameTime()
+              : 0;
+        const dt = Number(rawDt);
+
+        if (!isFinite(dt) || dt <= 0) return null;
+
+        const aabb = (r1: any, r2: any) =>
+          r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+
+        for (const rb of this.rigidbodies) {
+          const ent = rb.entity;
+          ent.vy += rb.gravityScale * dt;
+
+          let groundTouch = false;
+
+          // --- الحركة الأفقية X ---
+          ent.x += ent.vx * dt;
+          for (const col of this.staticColliders) {
+            if (ent === col) continue;
+            if (aabb(ent, col)) {
+              if (ent.vx > 0) ent.x = col.x - ent.w;
+              else if (ent.vx < 0) ent.x = col.x + col.w;
+              ent.vx = 0;
+            }
+          }
+
+          // --- الحركة الرأسية Y ---
+          ent.y += ent.vy * dt;
+          for (const col of this.staticColliders) {
+            if (ent === col) continue;
+            if (aabb(ent, col)) {
+              if (ent.vy > 0) {
+                ent.y = col.y - ent.h;
+                if (ent.bounciness > 0 && ent.vy > 50) {
+                  ent.vy = -ent.vy * ent.bounciness;
+                } else {
+                  ent.vy = 0;
+                  groundTouch = true;
+                }
+              } else if (ent.vy < 0) {
+                ent.y = col.y + col.h;
+                ent.vy = 0;
+              }
+            }
+          }
+          ent.isGrounded = groundTouch;
+        }
+
+        // 2. الرسم الاحترافي ونظام الـ Preview (الـ Graph الصغير)
+        if (r) {
+          // رسم المصادمات الثابتة
+          this.staticColliders.forEach((c) => {
+            if (c._isRaw) r.DrawRectangle(c.x, c.y, c.w, c.h, getColor(c.color));
+          });
+
+          // رسم الكائنات مع نظام الـ Graph
+          this.engineEntities.forEach((e) => {
+            // رسم الكائن نفسه
+            r.DrawRectangle(e.x, e.y, e.w, e.h, getColor(e.color));
+          });
+        }
+        return null;
+      },
+
+      // ==========================================
+      // � واجهة المستخدم (UI)
+      // ==========================================
+      // دالة جديدة بترسم نص ثابت على الشاشة مبيتحركش مع الكاميرا
+      drawUIText: (text, x, y, size, color, align) => {
+        this.uiDrawQueue.push({ type: 'text', args: [text, x, y, size, color, align] });
+        return null;
+      },
+
+      // ==========================================
+      // �🎥 نظام الكاميرا الذكي
+      // ==========================================
+      setCameraTarget: (target) => {
+        this.cameraTarget = target;
+        // لما بنحدد هدف جديد، بنخلي الكاميرا تنط عليه فوراً أول مرة عشان متبدأش من مكان بعيد
+        if (this.cameraTarget && this.camera2D) {
+          const targetProps = this.getProps(this.cameraTarget);
+          const targetX =
+            Number(targetProps?.x || 0) + Number(targetProps?.w || targetProps?.width || 0) / 2;
+          const targetY =
+            Number(targetProps?.y || 0) + Number(targetProps?.h || targetProps?.height || 0) / 2;
+          this.camera2D.target = { x: targetX, y: targetY };
+        }
+        return null;
+      },
+      setCameraOffset: (x, y) => {
+        this.cameraOffset = { x: Number(x), y: Number(y) };
+        return null;
+      },
+      setCameraZoom: (zoom) => {
+        this.cameraZoom = Math.max(0.1, Number(zoom)); // بنمنع الزووم يبقى صفر أو سالب
+        return null;
+      },
+      setCameraLerp: (amount) => {
+        // بنحدد القيمة بين 0 (مفيش حركة) و 1 (حركة فورية)
+        this.cameraLerpAmount = Math.max(0, Math.min(1, Number(amount)));
+        return null;
+      },
+      resetCamera: () => {
+        this.cameraTarget = null;
+        this.cameraOffset = { x: 0, y: 0 };
+        this.cameraZoom = 1.0;
+        this.cameraLerpAmount = 0.05;
+        if (this.camera2D && r) {
+          this.camera2D.target = { x: r.GetScreenWidth() / 2, y: r.GetScreenHeight() / 2 };
+          this.camera2D.zoom = 1.0;
+        }
+        return null;
+      }
     };
 
     for (const [k, fn] of Object.entries(b))
@@ -744,6 +992,13 @@ export class Interpreter {
     this.output = [];
     this.steps = 0;
     this.loopDepth = 0; // تصفير الـ depth مع كل run
+
+    // تصفير المحرك مع كل Run
+    this.engineEntities = [];
+    this.rigidbodies = [];
+    this.staticColliders = [];
+    this.uiDrawQueue = [];
+
     try {
       const ast = parse(source);
       await this.block((ast as { body: ASTNode[] }).body, this.env);

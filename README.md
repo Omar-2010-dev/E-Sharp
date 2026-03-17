@@ -195,6 +195,9 @@ E# comes with a built-in 2D engine.
 - `lerp(start, end, amt)`: Linear interpolation for smooth movement.
 - `checkCollision(rect1, rect2)`: AABB collision check.
 
+### 🖥️ UI Drawing
+- `drawUIText(txt, x, y, size, color)`: Renders text that is fixed to the screen (does not move with the camera).
+
 ---
 
 ## 📂 File System & Utilities
